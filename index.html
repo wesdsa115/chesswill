@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grandmaster AI | Stockfish Chess</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Chessground CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@lichess-org/chessground@10.1.0/assets/chessground.base.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@lichess-org/chessground@10.1.0/assets/chessground.brown.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@lichess-org/chessground@10.1.0/assets/chessground.cburnett.css">
+
+    <!-- chess.js (rules / game state) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+
+    <!-- PeerJS (peer-to-peer multiplayer) -->
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --panel-color: #1e293b;
+            --accent-color: #38bdf8;
+            --text-color: #f1f5f9;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        }
+
+        #board {
+            width: min(100%, 600px);
+            aspect-ratio: 1 / 1;
+            max-width: 600px;
+            flex-shrink: 0;
+            position: relative;
+        }
+
+        cg-board .coord, cg-board .cg-coord {
+            color: black !important;
+            fill: black !important;
+        }
+
+        @media (max-width: 640px) {
+            body { padding: 1rem 0.5rem !important; }
+            .max-w-6xl { gap: 1rem !important; }
+        }
+
+        .move-log-container::-webkit-scrollbar { width: 6px; }
+        .move-log-container::-webkit-scrollbar-thumb { background: #475569; border-radius: 10px; }
+
+        .status-indicator { transition: all 0.3s ease; }
+        .pulsate { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+
+        #engine-debug {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 10px;
+            background: #000;
+            color: #0f0;
+            padding: 5px;
+            border-radius: 4px;
+            height: 140px;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .side-btn.active {
+            background-color: #0284c7 !important;
+            color: white;
+        }
+
+        cg-board square.move-dest {
+            background: radial-gradient(rgba(20, 85, 30, 0.5) 22%, transparent 22%);
+        }
+        cg-board square.move-dest.oc {
+            background: radial-gradient(transparent 0%, transparent 80%, rgba(20, 85, 0, 0.3) 80%);
+        }
+        cg-board square.selected {
+            background-color: rgba(20, 85, 30, 0.5);
+        }
+        cg-board square.last-move {
+            background-color: rgba(155, 199, 0, 0.41);
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center md:justify-center p-4 md:p-8">
+
+    <div class="w-full max-w-6xl flex flex-col lg:flex-row gap-8 items-start justify-center">
+        <div class="flex-1 flex flex-col items-center w-full">
+            <div class="mb-6 text-center">
+                <h1 class="text-4xl font-bold tracking-tight mb-2 text-white">Grandmaster <span class="text-sky-400">AI</span></h1>
+                <div id="status" class="status-indicator inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800 text-sm font-medium border border-slate-700">
+                    <span id="status-dot" class="w-2 h-2 rounded-full bg-green-500"></span>
+                    <span id="status-text">Initializing AI...</span>
+                </div>
+            </div>
+
+            <div id="board" class="mb-6"></div>
+
+            <div id="game-over-overlay" class="hidden fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center">
+                <div class="relative bg-slate-800 p-8 rounded-2xl border border-slate-700 text-center shadow-2xl max-w-sm mx-4">
+                    <button id="btn-close-game-over" class="absolute top-4 right-4 text-slate-400 hover:text-white text-2xl leading-none">&times;</button>
+                    <h2 class="text-3xl font-bold mb-4">Game Over</h2>
+                    <p id="game-result" class="text-lg text-slate-400 mb-6">Checkmate!</p>
+                    <button id="btn-replay" class="w-full py-3 px-6 bg-sky-500 hover:bg-sky-400 text-white font-bold rounded-xl transition-colors">
+                        Play Again
+                    </button>
+                </div>
+            </div>
+
+            <div id="friend-modal" class="hidden fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-2xl max-w-md w-full">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 id="friend-modal-title" class="text-2xl font-bold">Play with Friend</h2>
+                        <button id="btn-close-friend" class="text-slate-400 hover:text-white text-2xl leading-none">&times;</button>
+                    </div>
+
+                    <div id="friend-initial" class="space-y-3">
+                        <button id="btn-create-room" class="w-full py-3 px-4 bg-sky-500 hover:bg-sky-400 text-white font-bold rounded-xl transition-colors">
+                            Create Room
+                        </button>
+                        <button id="btn-show-join" class="w-full py-3 px-4 bg-slate-700 hover:bg-slate-600 rounded-xl transition-colors text-sm font-medium">
+                            Join with Room ID
+                        </button>
+                    </div>
+
+                    <div id="friend-create" class="hidden space-y-4">
+                        <p class="text-sm text-slate-400">Share this code with your friend. They'll click <span class="text-slate-200 font-medium">Join with Room ID</span> and enter it.</p>
+                        <div class="flex gap-2">
+                            <input id="room-id-display" type="text" readonly
+                                   class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-center font-mono text-lg tracking-widest text-sky-400">
+                            <button id="btn-copy-room" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-medium">Copy</button>
+                        </div>
+                        <div id="room-link-row" class="hidden">
+                            <p class="text-xs text-slate-500 mb-1">Or share this link:</p>
+                            <input id="room-link-display" type="text" readonly
+                                   class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-300 font-mono">
+                        </div>
+                        <div id="create-status" class="text-sm text-amber-400 text-center">Waiting for friend to connect...</div>
+                    </div>
+
+                    <div id="friend-join" class="hidden space-y-4">
+                        <label class="text-sm text-slate-400 block">Enter the Room ID from your friend</label>
+                        <input id="room-id-input" type="text" placeholder="e.g. ABC123" maxlength="32"
+                               class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 font-mono uppercase tracking-widest text-center text-lg text-sky-400">
+                        <button id="btn-do-join" class="w-full py-3 px-4 bg-sky-500 hover:bg-sky-400 text-white font-bold rounded-xl transition-colors">
+                            Connect
+                        </button>
+                        <div id="join-status" class="text-sm text-amber-400 text-center"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="w-full lg:w-80 flex flex-col gap-6">
+            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-xl">
+                <h3 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+                    </svg>
+                    Game Settings
+                </h3>
+                <div class="space-y-6">
+                    <div>
+                        <label class="text-sm text-slate-400 mb-2 block">Play as</label>
+                        <div class="grid grid-cols-2 gap-2">
+                            <button id="side-white" class="side-btn active py-2 px-4 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors text-sm font-medium">White</button>
+                            <button id="side-black" class="side-btn py-2 px-4 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors text-sm font-medium">Black</button>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="flex justify-between mb-2">
+                            <label class="text-sm text-slate-400">Difficulty</label>
+                            <span id="difficulty-val" class="text-sm font-bold text-sky-400">Level 5</span>
+                        </div>
+                        <input type="range" id="difficulty" min="1" max="10" value="5"
+                               class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-sky-400">
+                    </div>
+                    <div class="grid grid-cols-1 gap-3">
+                        <button id="btn-friend" class="flex items-center justify-center gap-2 py-2 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition-colors text-sm font-bold">Play with Friend</button>
+                        <button id="btn-undo" class="flex items-center justify-center gap-2 py-2 px-4 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors text-sm font-medium">Undo Move</button>
+                        <button id="btn-flip" class="flex items-center justify-center gap-2 py-2 px-4 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors text-sm font-medium">Flip Board</button>
+                        <button id="btn-new" class="flex items-center justify-center gap-2 py-2 px-4 bg-sky-600 hover:bg-sky-500 text-white rounded-lg transition-colors text-sm font-bold">New Game</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-xl flex flex-col h-80">
+                <h3 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.582a2 2 0 01.707.293l2.293 2.293a2 2 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Move History
+                </h3>
+                <div id="move-log" class="move-log-container overflow-y-auto flex-1 pr-2 text-sm font-mono text-slate-400 grid grid-cols-2 gap-x-4 gap-y-1"></div>
+            </div>
+
+            <button id="btn-debug" class="text-xs text-slate-500 hover:text-slate-300 transition-colors self-start">Toggle Debug Console</button>
+            <div id="engine-debug"></div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { Chessground } from 'https://cdn.jsdelivr.net/npm/@lichess-org/chessground@10.1.0/dist/chessground.min.js';
+
+        let engine = null;
+        let game = new Chess();
+        let board = null;
+        let playerColor = 'white';
+        let boardOrientation = 'white';
+        let isEngineReady = false;
+        let pendingAiMove = false;
+        let suppressNextBestMove = false;
+        let lastMove = undefined;
+
+        // Multiplayer (PeerJS)
+        let gameMode = 'ai';   // 'ai' or 'friend'
+        let peer = null;       // PeerJS instance
+        let conn = null;       // active DataConnection
+        let myPeerId = null;   // my own peer ID (used as the room ID)
+        let isMultiplayerHost = false; // host plays White
+        let incomingMovesOnly = false; // while applying a remote move, ignore board events
+
+        function logDebug(msg) {
+            const el = document.getElementById('engine-debug');
+            el.innerText += msg + '\n';
+            el.scrollTop = el.scrollHeight;
+        }
+
+        function gameTurnColor() {
+            return game.turn() === 'w' ? 'white' : 'black';
+        }
+
+        function getLegalDests() {
+            const dests = new Map();
+            if (game.game_over()) return dests;
+            const moves = game.moves({ verbose: true });
+            for (const m of moves) {
+                if (!dests.has(m.from)) dests.set(m.from, []);
+                if (!dests.get(m.from).includes(m.to)) dests.get(m.from).push(m.to);
+            }
+            return dests;
+        }
+
+        function syncBoard(opts = {}) {
+            const turn = gameTurnColor();
+            // In friend mode, only the player whose color matches the side to move can play.
+            const userCanMove = !game.game_over() && (
+                gameMode === 'ai' ? turn === playerColor
+                                  : turn === playerColor
+            );
+
+            board.set({
+                fen: game.fen(),
+                orientation: boardOrientation,
+                turnColor: turn,
+                check: game.in_check() ? turn : false,
+                lastMove: lastMove,
+                animation: { enabled: opts.animate !== false, duration: 200 },
+                movable: {
+                    free: false,
+                    color: userCanMove ? playerColor : undefined,
+                    dests: userCanMove ? getLegalDests() : new Map(),
+                    showDests: true,
+                    events: { after: onUserMove }
+                },
+                draggable: {
+                    enabled: true,
+                    showGhost: true
+                },
+                coordinates: true
+            });
+
+            if (game.game_over()) {
+                updateStatus('Game Over', 'bg-red-500');
+            } else if (turn === playerColor) {
+                updateStatus('Your Turn', 'bg-green-500');
+            } else {
+                updateStatus(gameMode === 'friend' ? "Friend's Turn" : 'Stockfish is thinking...', 'bg-amber-500 pulsate');
+            }
+        }
+
+        function onUserMove(orig, dest) {
+            if (game.game_over()) return;
+
+            const piece = game.get(orig);
+            let promotion;
+            if (piece && piece.type === 'p') {
+                const promotionRank = playerColor === 'white' ? '8' : '1';
+                if (dest[1] === promotionRank) promotion = 'q';
+            }
+
+            const moveResult = game.move({ from: orig, to: dest, promotion });
+            if (!moveResult) {
+                syncBoard({ animate: false }); // illegal move: snap back
+                return;
+            }
+
+            lastMove = [moveResult.from, moveResult.to];
+            syncBoard({ animate: true });
+            updateMoveLog();
+
+            // In friend mode, broadcast the move to the peer instead of asking Stockfish.
+            if (gameMode === 'friend') {
+                if (conn && conn.open) {
+                    conn.send({
+                        type: 'move',
+                        from: moveResult.from,
+                        to: moveResult.to,
+                        promotion: moveResult.promotion || null
+                    });
+                }
+                if (game.game_over()) {
+                    handleGameOver();
+                }
+                return;
+            }
+
+            if (!game.game_over()) {
+                requestBestMove();
+            } else {
+                handleGameOver();
+            }
+        }
+
+        function initEngine() {
+            logDebug('Initializing Engine...');
+            updateStatus('Initializing AI...', 'bg-amber-500 pulsate');
+            try {
+                engine = new Worker('/stockfish.js');
+                engine.onmessage = handleEngineMessage;
+                engine.onerror = (e) => {
+                    logDebug('Worker error: ' + (e.message || e.toString()));
+                    updateStatus('Engine Failed', 'bg-red-500');
+                };
+                engine.postMessage('uci');
+                logDebug("Sent 'uci'");
+
+                setTimeout(() => {
+                    if (!isEngineReady) {
+                        logDebug("Engine timeout: 'uciok' not received within 15s.");
+                        updateStatus('Engine Failed', 'bg-red-500');
+                    }
+                }, 15000);
+            } catch (e) {
+                logDebug('Critical Error: ' + e.message);
+                updateStatus('Engine Failed', 'bg-red-500');
+            }
+        }
+
+        function applySkillLevel() {
+            const depth = parseInt(document.getElementById('difficulty').value, 10);
+            const skillLevel = (depth - 1) * 2;
+            engine.postMessage(`setoption name Skill Level value ${skillLevel}`);
+        }
+
+        function handleEngineMessage(event) {
+            const line = (typeof event.data === 'string') ? event.data : '';
+            if (!line) return;
+            if (!line.startsWith('info ')) logDebug('Engine: ' + line);
+
+            // Any non-bestmove output means the engine has moved past the
+            // suppressed search; clear the flag so a real bestmove is honored.
+            if (suppressNextBestMove && !line.startsWith('bestmove')) {
+                suppressNextBestMove = false;
+            }
+
+            if (line === 'uciok') {
+                isEngineReady = true;
+                applySkillLevel();
+                logDebug('Engine ready.');
+                if (pendingAiMove) {
+                    pendingAiMove = false;
+                    requestBestMove();
+                } else {
+                    syncBoard({ animate: false });
+                }
+            } else if (line.startsWith('bestmove')) {
+                if (suppressNextBestMove) {
+                    suppressNextBestMove = false;
+                    logDebug('Suppressed bestmove after undo.');
+                    // Don't resync the board here; undoMove already set the
+                    // correct state and may have already queued a new search.
+                    return;
+                }
+                const parts = line.split(/\s+/);
+                const bestMove = parts[1];
+                if (bestMove && bestMove !== '(none)' && bestMove !== 'null') {
+                    makeAiMove(bestMove);
+                } else {
+                    logDebug('Engine returned no move (game may be over).');
+                }
+            }
+        }
+
+        function requestBestMove() {
+            if (!isEngineReady) {
+                pendingAiMove = true;
+                logDebug('Engine not ready, queuing move request.');
+                return;
+            }
+            const depth = parseInt(document.getElementById('difficulty').value, 10);
+            logDebug(`Requesting move at depth ${depth + 2}`);
+            updateStatus('Stockfish is thinking...', 'bg-amber-500 pulsate');
+            engine.postMessage(`position fen ${game.fen()}`);
+            engine.postMessage(`go depth ${depth + 2}`);
+        }
+
+        function makeAiMove(bestMove) {
+            const from = bestMove.substring(0, 2);
+            const to = bestMove.substring(2, 4);
+            const promotion = bestMove.length > 4 ? bestMove.substring(4, 5) : 'q';
+            const moveResult = game.move({ from, to, promotion });
+            if (!moveResult) {
+                logDebug('AI move rejected: ' + bestMove);
+                return;
+            }
+            lastMove = [moveResult.from, moveResult.to];
+            syncBoard({ animate: true });
+            updateMoveLog();
+            if (game.game_over()) {
+                handleGameOver();
+            }
+        }
+
+        function updateStatus(text, dotColorClass) {
+            document.getElementById('status-text').innerText = text;
+            document.getElementById('status-dot').className = `w-2 h-2 rounded-full ${dotColorClass}`;
+        }
+
+        function updateMoveLog() {
+            const log = document.getElementById('move-log');
+            log.innerHTML = '';
+            const history = game.history();
+            for (let i = 0; i < history.length; i += 2) {
+                const whiteMove = history[i];
+                const blackMove = history[i + 1] || '';
+                const row = document.createElement('div');
+                row.className = 'contents';
+                row.innerHTML = `
+                    <div class="text-slate-500">${(i / 2) + 1}. <span class="text-slate-200">${whiteMove}</span></div>
+                    <div class="text-slate-500">${blackMove ? `<span class="text-slate-200">${blackMove}</span>` : ''}</div>
+                `;
+                log.appendChild(row);
+            }
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function handleGameOver() {
+            const overlay = document.getElementById('game-over-overlay');
+            const resultText = document.getElementById('game-result');
+            overlay.classList.remove('hidden');
+            if (game.in_checkmate()) {
+                const winner = game.turn() === 'w' ? 'Black' : 'White';
+                resultText.innerText = `Checkmate! ${winner} wins.`;
+            } else if (game.in_draw()) {
+                resultText.innerText = 'Draw!';
+            } else {
+                resultText.innerText = 'Game ended.';
+            }
+        }
+
+        function resetGame() {
+            game = new Chess();
+            lastMove = undefined;
+            boardOrientation = playerColor;
+            document.getElementById('game-over-overlay').classList.add('hidden');
+            document.getElementById('move-log').innerHTML = '';
+            if (isEngineReady && engine) {
+                engine.postMessage('ucinewgame');
+            }
+            syncBoard({ animate: false });
+
+            if (gameMode === 'ai') {
+                // AI mode: if the player is Black, ask Stockfish to open.
+                if (playerColor === 'black') {
+                    requestBestMove();
+                }
+            } else if (gameMode === 'friend' && conn && conn.open) {
+                // Notify peer of the new game. Host (White) sends; guest (Black) mirrors.
+                conn.send({ type: 'newgame' });
+                if (playerColor === 'black') {
+                    // We're Black; the host will send the first move.
+                }
+            }
+        }
+
+        function undoMove() {
+            if (game.history().length === 0) return;
+
+            // In friend mode, request an undo from the peer (they must accept).
+            if (gameMode === 'friend') {
+                if (conn && conn.open) {
+                    conn.send({ type: 'undo-request' });
+                    updateStatus('Undo requested...', 'bg-amber-500 pulsate');
+                }
+                return;
+            }
+
+            // Stop any in-progress search and ignore its bestmove response
+            if (isEngineReady) {
+                suppressNextBestMove = true;
+                engine.postMessage('stop');
+            }
+
+            const turn = gameTurnColor();
+            if (turn === playerColor) {
+                // It's the user's turn -> the AI just moved. Undo AI's move and the user's preceding move.
+                game.undo();
+                if (game.history().length > 0) {
+                    game.undo();
+                }
+            } else {
+                // It's the AI's turn -> the user just moved. Undo only the user's move.
+                game.undo();
+            }
+
+            lastMove = undefined;
+            syncBoard({ animate: true });
+            updateMoveLog();
+
+            // If it's now the AI's turn, ask it to play. We send a fresh position
+            // command so the engine is in a clean state even if its previous
+            // search is still winding down.
+            if (game.history().length > 0 && gameTurnColor() !== playerColor && !game.game_over()) {
+                if (isEngineReady) {
+                    engine.postMessage(`position fen ${game.fen()}`);
+                    const depth = parseInt(document.getElementById('difficulty').value, 10);
+                    updateStatus('Stockfish is thinking...', 'bg-amber-500 pulsate');
+                    engine.postMessage(`go depth ${depth + 2}`);
+                } else {
+                    pendingAiMove = true;
+                }
+            } else {
+                updateStatus('Your Turn', 'bg-green-500');
+            }
+        }
+
+        function performUndo() {
+            // Actually perform the undo locally and re-sync. Used by both
+            // the player who requested an undo and the player who accepted it.
+            const turn = gameTurnColor();
+            if (turn === playerColor) {
+                game.undo();
+                if (game.history().length > 0) game.undo();
+            } else {
+                game.undo();
+            }
+            lastMove = undefined;
+            syncBoard({ animate: true });
+            updateMoveLog();
+        }
+
+        function flipBoard() {
+            board.toggleOrientation();
+            boardOrientation = boardOrientation === 'white' ? 'black' : 'white';
+        }
+
+        // ---------------- Multiplayer (PeerJS) ----------------
+
+        function generateRoomId() {
+            // 6-char uppercase alphanumeric, easy to type and read aloud.
+            const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // omit ambiguous chars (I, O, 0, 1)
+            let id = '';
+            for (let i = 0; i < 6; i++) {
+                id += chars[Math.floor(Math.random() * chars.length)];
+            }
+            return id;
+        }
+
+        function openFriendModal() {
+            document.getElementById('friend-modal').classList.remove('hidden');
+            showFriendPane('initial');
+        }
+
+        function closeFriendModal() {
+            document.getElementById('friend-modal').classList.add('hidden');
+        }
+
+        function showFriendPane(which) {
+            document.getElementById('friend-initial').classList.toggle('hidden', which !== 'initial');
+            document.getElementById('friend-create').classList.toggle('hidden', which !== 'create');
+            document.getElementById('friend-join').classList.toggle('hidden', which !== 'join');
+        }
+
+        function createRoom() {
+            // We use the PeerJS public broker. The peer ID is derived from the
+            // short room code so the joiner can find the host by entering
+            // just the room code.
+            const roomId = generateRoomId();
+            const peerId = 'chess-' + roomId.toLowerCase();
+
+            showFriendPane('create');
+            const status = document.getElementById('create-status');
+            status.innerText = 'Setting up room...';
+            status.className = 'text-sm text-amber-400 text-center';
+
+            try {
+                peer = new Peer(peerId, { debug: 0 });
+            } catch (e) {
+                status.innerText = 'Failed to start: ' + e.message;
+                status.className = 'text-sm text-red-400 text-center';
+                return;
+            }
+
+            peer.on('error', (err) => {
+                logDebug('Peer error: ' + err.type + ' ' + (err.message || ''));
+                status.innerText = 'Error: ' + (err.message || err.type);
+                status.className = 'text-sm text-red-400 text-center';
+            });
+
+            peer.on('open', (id) => {
+                myPeerId = id;
+                document.getElementById('room-id-display').value = roomId;
+                const link = `${location.origin}${location.pathname}?room=${roomId}`;
+                const linkEl = document.getElementById('room-link-display');
+                if (linkEl) {
+                    linkEl.value = link;
+                    document.getElementById('room-link-row').classList.remove('hidden');
+                }
+                status.innerText = 'Waiting for friend to connect...';
+                status.className = 'text-sm text-amber-400 text-center';
+                logDebug('Room created: ' + roomId);
+            });
+
+            peer.on('connection', (dataConn) => {
+                conn = dataConn;
+                setupConnection();
+            });
+        }
+
+        function joinRoom() {
+            const roomId = document.getElementById('room-id-input').value.trim().toUpperCase();
+            if (!roomId) return;
+
+            // Try to find the host by trying recent suffixes. PeerJS requires an
+            // exact peer ID, so we maintain a small registry: we just append a
+            // couple of random suffixes and let the broker find one. Simpler
+            // approach: ask the broker to look up the host by an exact ID.
+            // We assume the host uses "chess-<roomId>-<random>" — but we don't
+            // know the random suffix. So we use PeerJS's recommended approach:
+            // connect to a known peer ID derived from the room code.
+            //
+            // Strategy: we use a deterministic peer ID for the host:
+            //   "chess-<roomId>"   (no random suffix)
+            const hostPeerId = 'chess-' + roomId.toLowerCase();
+
+            showFriendPane('join');
+            const status = document.getElementById('join-status');
+            status.innerText = 'Connecting...';
+            status.className = 'text-sm text-amber-400 text-center';
+
+            try {
+                // First, get our own peer ID assigned by the broker
+                peer = new Peer({ debug: 0 });
+            } catch (e) {
+                status.innerText = 'Failed to start: ' + e.message;
+                status.className = 'text-sm text-red-400 text-center';
+                return;
+            }
+
+            peer.on('error', (err) => {
+                logDebug('Peer error (join): ' + err.type + ' ' + (err.message || ''));
+                if (err.type === 'peer-unavailable') {
+                    status.innerText = 'Room not found. Check the code and try again.';
+                } else {
+                    status.innerText = 'Error: ' + (err.message || err.type);
+                }
+                status.className = 'text-sm text-red-400 text-center';
+            });
+
+            peer.on('open', () => {
+                logDebug('Connecting to host: ' + hostPeerId);
+                conn = peer.connect(hostPeerId, { reliable: true });
+                setupConnection();
+                // Timeout if the host never accepts
+                setTimeout(() => {
+                    if (conn && !conn.open) {
+                        status.innerText = 'Could not reach host. They may be offline.';
+                        status.className = 'text-sm text-red-400 text-center';
+                    }
+                }, 10000);
+            });
+        }
+
+        function setupConnection() {
+            conn.on('open', () => {
+                logDebug('Connection established.');
+                // Host (White) initiates the game; guest (Black) waits for the host.
+                if (isMultiplayerHost) {
+                    enterFriendMode('white');
+                    conn.send({ type: 'hello', color: 'white' });
+                } else {
+                    enterFriendMode('black');
+                    conn.send({ type: 'hello', color: 'black' });
+                }
+                closeFriendModal();
+            });
+
+            conn.on('data', (data) => {
+                handlePeerMessage(data);
+            });
+
+            conn.on('close', () => {
+                logDebug('Peer disconnected.');
+                updateStatus('Friend disconnected', 'bg-red-500');
+                // Disable board input
+                if (board) {
+                    board.set({ movable: { color: undefined, dests: new Map() } });
+                }
+            });
+
+            conn.on('error', (err) => {
+                logDebug('Connection error: ' + err);
+            });
+        }
+
+        function handlePeerMessage(data) {
+            if (!data || typeof data !== 'object') return;
+            logDebug('Peer: ' + data.type);
+
+            switch (data.type) {
+                case 'move': {
+                    const moveResult = game.move({
+                        from: data.from,
+                        to: data.to,
+                        promotion: data.promotion || 'q'
+                    });
+                    if (moveResult) {
+                        lastMove = [moveResult.from, moveResult.to];
+                        syncBoard({ animate: true });
+                        updateMoveLog();
+                        if (game.game_over()) handleGameOver();
+                    } else {
+                        logDebug('Illegal move from peer: ' + data.from + data.to);
+                    }
+                    break;
+                }
+                case 'newgame': {
+                    game = new Chess();
+                    lastMove = undefined;
+                    document.getElementById('game-over-overlay').classList.add('hidden');
+                    document.getElementById('move-log').innerHTML = '';
+                    syncBoard({ animate: true });
+                    updateMoveLog();
+                    updateStatus("Friend's Turn", 'bg-amber-500 pulsate');
+                    break;
+                }
+                case 'undo-request': {
+                    // Auto-accept for simplicity; you could show a prompt here.
+                    performUndo();
+                    conn.send({ type: 'undo-done' });
+                    break;
+                }
+                case 'undo-done': {
+                    performUndo();
+                    updateStatus('Your Turn', 'bg-green-500');
+                    break;
+                }
+                case 'resign': {
+                    game = new Chess(); // simplest: clear
+                    document.getElementById('game-over-overlay').classList.add('hidden');
+                    syncBoard({ animate: true });
+                    updateStatus('Friend resigned', 'bg-slate-500');
+                    break;
+                }
+            }
+        }
+
+        function enterFriendMode(color) {
+            gameMode = 'friend';
+            playerColor = color;
+            boardOrientation = color;
+            document.getElementById('side-white').classList.toggle('active', color === 'white');
+            document.getElementById('side-black').classList.toggle('active', color === 'black');
+            // Hide AI controls that don't make sense in friend mode
+            document.getElementById('difficulty').parentElement.classList.add('hidden');
+            document.querySelector('label.text-sm.text-slate-400.mb-2.block').classList.add('hidden');
+            document.querySelector('.grid.grid-cols-2.gap-2').classList.add('hidden');
+            // Show a connection indicator
+            updateStatus('Connected! Your Turn', 'bg-emerald-500');
+            // Repurpose the friend button as a "Leave" button
+            const fb = document.getElementById('btn-friend');
+            fb.innerText = 'Leave Friend Mode';
+            fb.classList.remove('bg-emerald-600', 'hover:bg-emerald-500');
+            fb.classList.add('bg-red-600', 'hover:bg-red-500');
+            resetGame();
+        }
+
+        function leaveFriendMode() {
+            if (conn) {
+                try { conn.close(); } catch (e) {}
+                conn = null;
+            }
+            if (peer) {
+                try { peer.destroy(); } catch (e) {}
+                peer = null;
+            }
+            gameMode = 'ai';
+            isMultiplayerHost = false;
+            // Restore AI controls
+            document.getElementById('difficulty').parentElement.classList.remove('hidden');
+            document.querySelector('label.text-sm.text-slate-400.mb-2.block').classList.remove('hidden');
+            document.querySelector('.grid.grid-cols-2.gap-2').classList.remove('hidden');
+            // Restore friend button
+            const fb = document.getElementById('btn-friend');
+            fb.innerText = 'Play with Friend';
+            fb.classList.add('bg-emerald-600', 'hover:bg-emerald-500');
+            fb.classList.remove('bg-red-600', 'hover:bg-red-500');
+            resetGame();
+        }
+
+        function setPlayerColor(color) {
+            playerColor = color;
+            document.getElementById('side-white').classList.toggle('active', color === 'white');
+            document.getElementById('side-black').classList.toggle('active', color === 'black');
+            resetGame();
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const boardEl = document.getElementById('board');
+            board = Chessground(boardEl, {});
+            syncBoard({ animate: false });
+
+            // Force coordinate color (MutationObserver)
+            const observer = new MutationObserver(() => {
+                document.querySelectorAll('.cg-coord, .coord').forEach(el => {
+                    el.style.color = 'black';
+                    el.style.fontWeight = 'bold';
+                });
+            });
+            observer.observe(document.getElementById('board'), { childList: true, subtree: true });
+
+            initEngine();
+
+            document.getElementById('btn-new').addEventListener('click', resetGame);
+            document.getElementById('btn-undo').addEventListener('click', undoMove);
+            document.getElementById('btn-flip').addEventListener('click', flipBoard);
+            document.getElementById('btn-replay').addEventListener('click', resetGame);
+            document.getElementById('btn-close-game-over').addEventListener('click', () => {
+                document.getElementById('game-over-overlay').classList.add('hidden');
+            });
+
+            // Multiplayer buttons
+            document.getElementById('btn-friend').addEventListener('click', () => {
+                if (gameMode === 'friend') {
+                    leaveFriendMode();
+                } else {
+                    openFriendModal();
+                }
+            });
+            document.getElementById('btn-close-friend').addEventListener('click', closeFriendModal);
+            document.getElementById('btn-create-room').addEventListener('click', () => {
+                isMultiplayerHost = true;
+                createRoom();
+            });
+            document.getElementById('btn-show-join').addEventListener('click', () => {
+                showFriendPane('join');
+            });
+            document.getElementById('btn-do-join').addEventListener('click', () => {
+                isMultiplayerHost = false;
+                joinRoom();
+            });
+            document.getElementById('btn-copy-room').addEventListener('click', () => {
+                const el = document.getElementById('room-id-display');
+                el.select();
+                try { document.execCommand('copy'); } catch (e) {}
+            });
+
+            // Auto-open Join pane if the URL contains ?room=XXXX
+            const urlParams = new URLSearchParams(location.search);
+            const roomParam = urlParams.get('room');
+            if (roomParam) {
+                isMultiplayerHost = false;
+                setTimeout(() => {
+                    openFriendModal();
+                    showFriendPane('join');
+                    document.getElementById('room-id-input').value = roomParam.toUpperCase();
+                }, 500);
+            }
+
+            document.getElementById('difficulty').addEventListener('input', function () {
+                document.getElementById('difficulty-val').innerText = `Level ${this.value}`;
+                if (isEngineReady) applySkillLevel();
+            });
+
+            document.getElementById('side-white').addEventListener('click', () => setPlayerColor('white'));
+            document.getElementById('side-black').addEventListener('click', () => setPlayerColor('black'));
+
+            document.getElementById('btn-debug').addEventListener('click', () => {
+                const el = document.getElementById('engine-debug');
+                el.style.display = el.style.display === 'block' ? 'none' : 'block';
+            });
+
+            window.addEventListener('resize', () => {
+                if (board) board.redrawAll();
+            });
+        });
+    </script>
+</body>
+</html>
