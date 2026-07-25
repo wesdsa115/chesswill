@@ -333,7 +333,7 @@
             logDebug('Initializing Engine...');
             updateStatus('Initializing AI...', 'bg-amber-500 pulsate');
             try {
-                engine = new Worker('stockfish.js');
+                engine = new Worker('./stockfish.js');
                 engine.onmessage = handleEngineMessage;
                 engine.onerror = (e) => {
                     logDebug('Worker error: ' + (e.message || e.toString()));
